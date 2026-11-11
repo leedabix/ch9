@@ -1,8 +1,10 @@
 
-import streamlit as st
-import pandas as pd
-import requests
 from io import StringIO
+
+import pandas as pd
+import plotly.express as px
+import requests
+import streamlit as st
 
 
 # ----------------------------------------
@@ -16,8 +18,8 @@ st.set_page_config(
 
 st.title("🌡️ 서울 연평균 기온 분석")
 st.write(
-    "서울의 일별 기온 데이터를 불러와 "
-    "연도별 평균 기온을 계산합니다."
+    "서울의 일별 기온 데이터를 불러와 연평균 기온을 "
+    "계산하고, 산점도로 시각화합니다."
 )
 
 CSV_URL = (
@@ -135,7 +137,6 @@ col2.metric("기록 마지막 날짜", end_date)
 # ----------------------------------------
 st.subheader("중복 날짜 확인")
 
-# 날짜가 없는 기록은 중복 비교에서 제외
 valid_df = df.dropna(subset=["날짜"]).copy()
 
 duplicate_mask = valid_df.duplicated(
@@ -161,11 +162,9 @@ st.write(
 st.info(
     "같은 날짜의 기록이 중복되어 있다면 "
     "평균 기온이 유효한 기록을 우선해 "
-    "한 건만 남깁니다. "
-    "중복 기록을 모두 평균에 포함하지 않습니다."
+    "한 건만 남깁니다."
 )
 
-# 평균 기온이 있는 기록 우선
 valid_df["기온유효"] = valid_df["평균기온"].notna()
 
 valid_df = valid_df.sort_values(
@@ -183,11 +182,10 @@ valid_df = valid_df.drop(columns=["기온유효"])
 
 
 # ----------------------------------------
-# 6. 연도별 유효 날짜 수 계산
+# 6. 연도별 평균 기온 계산
 # ----------------------------------------
 valid_df["연도"] = valid_df["날짜"].dt.year
 
-# 평균 기온이 존재하는 날짜만 유효 날짜로 계산
 yearly = (
     valid_df.groupby("연도")
     .agg(
@@ -197,7 +195,6 @@ yearly = (
     .reset_index()
 )
 
-# 350일 이상인 연도만 포함
 yearly["분석여부"] = yearly["유효날짜수"].apply(
     lambda count: (
         "포함" if count >= MIN_DAYS else "제외"
@@ -214,7 +211,7 @@ excluded = yearly.loc[
 
 
 # ----------------------------------------
-# 7. 분석 대상 요약
+# 7. 데이터 검증 결과
 # ----------------------------------------
 st.subheader("연도별 데이터 검증 결과")
 
@@ -241,7 +238,7 @@ st.dataframe(
 
 
 # ----------------------------------------
-# 8. 제외한 연도 확인
+# 8. 분석에서 제외한 연도
 # ----------------------------------------
 st.subheader("분석에서 제외한 연도")
 
@@ -265,7 +262,7 @@ else:
 
 
 # ----------------------------------------
-# 9. 연평균 기온 계산 결과
+# 9. 연평균 기온 결과 표
 # ----------------------------------------
 st.subheader("서울 연도별 평균 기온")
 
@@ -274,39 +271,213 @@ if included.empty:
         "유효 날짜가 350일 이상인 연도가 없어 "
         "연평균 기온 결과를 표시할 수 없습니다."
     )
-else:
-    result = included[
-        ["연도", "유효날짜수", "연평균기온"]
-    ].copy()
+    st.stop()
 
-    result = result.rename(
-        columns={
-            "유효날짜수": "유효 날짜 수",
-            "연평균기온": "연평균 기온(℃)",
-        }
-    )
+result = included[
+    ["연도", "유효날짜수", "연평균기온"]
+].copy()
 
-    result = result.sort_values("연도")
+result = result.rename(
+    columns={
+        "유효날짜수": "유효 날짜 수",
+        "연평균기온": "연평균 기온(℃)",
+    }
+)
+
+result = result.sort_values("연도")
+
+st.dataframe(
+    result,
+    hide_index=True,
+    use_container_width=True,
+    column_config={
+        "연도": st.column_config.NumberColumn(
+            format="%d"
+        ),
+        "유효 날짜 수": st.column_config.NumberColumn(
+            format="%d"
+        ),
+        "연평균 기온(℃)": st.column_config.NumberColumn(
+            format="%.2f"
+        ),
+    },
+)
+
+
+# ----------------------------------------
+# 10. 가장 더운 해와 추운 해 선정
+# ----------------------------------------
+st.divider()
+st.header("📈 서울 연평균 기온 산점도")
+
+chart_df = included.copy()
+
+# 평균 기온이 높은 순서로 5개 연도 선정
+hottest = chart_df.sort_values(
+    ["연평균기온", "연도"],
+    ascending=[False, True],
+).head(5)
+
+# 평균 기온이 낮은 순서로 5개 연도 선정
+coldest = chart_df.sort_values(
+    ["연평균기온", "연도"],
+    ascending=[True, True],
+).head(5)
+
+# 중복 없이 분류
+# 분석 연도가 10개 미만이면 더운 해를 우선
+hot_years = set(hottest["연도"])
+cold_years = set(coldest["연도"]) - hot_years
+
+
+def classify_year(year):
+    if year in hot_years:
+        return "가장 더운 5개 연도"
+    if year in cold_years:
+        return "가장 추운 5개 연도"
+    return "나머지 연도"
+
+
+chart_df["구분"] = chart_df["연도"].apply(
+    classify_year
+)
+
+# 더운 해와 추운 해에만 연도 표시
+chart_df["연도표시"] = chart_df.apply(
+    lambda row: (
+        str(int(row["연도"]))
+        if row["구분"] != "나머지 연도"
+        else ""
+    ),
+    axis=1,
+)
+
+# 그래프에 표시할 색상
+color_map = {
+    "가장 더운 5개 연도": "#EF4444",
+    "가장 추운 5개 연도": "#3B82F6",
+    "나머지 연도": "#9CA3AF",
+}
+
+
+# ----------------------------------------
+# 11. Plotly 산점도
+# ----------------------------------------
+fig = px.scatter(
+    chart_df,
+    x="연도",
+    y="연평균기온",
+    color="구분",
+    text="연도표시",
+    color_discrete_map=color_map,
+    category_orders={
+        "구분": [
+            "나머지 연도",
+            "가장 추운 5개 연도",
+            "가장 더운 5개 연도",
+        ]
+    },
+    custom_data=[
+        "연도",
+        "연평균기온",
+        "유효날짜수",
+    ],
+    labels={
+        "연도": "연도",
+        "연평균기온": "연평균 기온(℃)",
+        "구분": "구분",
+    },
+    title="서울 연도별 평균 기온",
+)
+
+# 점에 마우스를 올렸을 때 표시할 정보
+fig.update_traces(
+    hovertemplate=(
+        "연도: %{customdata[0]}년<br>"
+        "평균 기온: %{customdata[1]:.2f}℃<br>"
+        "계산에 사용한 날짜 수: "
+        "%{customdata[2]}일"
+        "<extra></extra>"
+    ),
+    marker=dict(
+        size=10,
+        opacity=0.85,
+    ),
+    textposition="top center",
+    textfont=dict(size=10),
+)
+
+fig.update_layout(
+    height=600,
+    xaxis_title="연도",
+    yaxis_title="연평균 기온(℃)",
+    legend_title_text="연도 구분",
+    margin=dict(
+        l=20,
+        r=20,
+        t=70,
+        b=30,
+    ),
+)
+
+fig.update_xaxes(
+    tickformat="d",
+)
+
+st.plotly_chart(
+    fig,
+    use_container_width=True,
+)
+
+
+# ----------------------------------------
+# 12. 가장 더운 해와 추운 해 요약
+# ----------------------------------------
+col1, col2 = st.columns(2)
+
+with col1:
+    st.subheader("🔴 가장 더운 5개 연도")
 
     st.dataframe(
-        result,
+        hottest[
+            ["연도", "연평균기온", "유효날짜수"]
+        ].rename(
+            columns={
+                "연평균기온": "평균 기온(℃)",
+                "유효날짜수": "유효 날짜 수",
+            }
+        ),
         hide_index=True,
         use_container_width=True,
-        column_config={
-            "연도": st.column_config.NumberColumn(
-                format="%d"
-            ),
-            "유효 날짜 수": st.column_config.NumberColumn(
-                format="%d"
-            ),
-            "연평균 기온(℃)": st.column_config.NumberColumn(
-                format="%.2f"
-            ),
-        },
     )
+
+with col2:
+    st.subheader("🔵 가장 추운 5개 연도")
+
+    st.dataframe(
+        coldest[
+            ["연도", "연평균기온", "유효날짜수"]
+        ].rename(
+            columns={
+                "연평균기온": "평균 기온(℃)",
+                "유효날짜수": "유효 날짜 수",
+            }
+        ),
+        hide_index=True,
+        use_container_width=True,
+    )
+
+st.info(
+    "산점도의 각 점은 하나의 연도를 나타냅니다. "
+    "빨간색은 평균 기온이 가장 높았던 5개 연도, "
+    "파란색은 가장 낮았던 5개 연도입니다. "
+    "점에 마우스를 올리면 평균 기온과 "
+    "계산에 사용한 날짜 수를 확인할 수 있습니다."
+)
 
 st.caption(
     "연평균 기온은 중복 날짜를 제거한 뒤 "
-    "평균 기온이 기록된 날짜만 사용해 계산했습니다. "
-    "유효 날짜가 연간 350일 미만인 연도는 제외했습니다."
+    "평균 기온이 기록된 날짜만으로 계산했습니다. "
+    "연간 유효 날짜가 350일 미만인 연도는 "
+    "분석에서 제외했습니다."
 )
